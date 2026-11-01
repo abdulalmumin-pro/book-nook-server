@@ -8,6 +8,18 @@ const PORT = process.env.PORT || 7000;
 app.use(cors())
 app.use(express.json())
 
+const verifyApi = (req, res, next) =>{
+  const authHeader = req.headers.authorization
+  console.log(authHeader)
+  if(authHeader !== "user logged in"){
+    return res.status(401).send({messege: 'Unauthorized'})
+
+  }
+  next()
+  console.log('i am middleware');
+
+}
+
 const client = new MongoClient(process.env.MONGODB_URI);
 
 export async function connectToMongoDB() {
@@ -37,7 +49,8 @@ app.get("/books", async(req, res) => {
     res.send(result)
 })
 
-app.get('/books/:id', async(req, res) => {
+app.get('/books/:id', verifyApi,  async(req, res) => {
+  
   const {id} = req.params;
   const result = await booksCollection.findOne({_id: new ObjectId(id)})
 
