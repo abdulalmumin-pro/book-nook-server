@@ -12,7 +12,7 @@ app.use(express.json());
 
 /* -------------------- Authentication Middleware -------------------- */
 
-const JWKS = createRemoteJWKSet(new URL("http://localhost:3000/api/auth/jwks"));
+const JWKS = createRemoteJWKSet(new URL(`${process.env.CLIENT_URL}/api/auth/jwks`));
 
 const verifyToken = async (req, res, next) => {
   const authHeader = req.headers.authorization;
@@ -262,5 +262,5 @@ app.get("/", (req, res) => {
 /* -------------------- Server -------------------- */
 
 app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`Server running on ${PORT}`);
 });
