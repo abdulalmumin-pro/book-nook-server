@@ -3,75 +3,264 @@ import "dotenv/config";
 import cors from "cors";
 import { MongoClient, ObjectId } from "mongodb";
 import { createRemoteJWKSet, jwtVerify } from "jose";
+
 const app = express();
 const PORT = process.env.PORT || 7000;
 
-app.use(cors())
-app.use(express.json())
+app.use(cors());
+app.use(express.json());
 
-const verifyToken = async(req, res, next) =>{
-  const authHeader = req.headers.authorization
-  if(!authHeader){
-    return res.status(401).send({msg: 'Unauthorized'})
-  }
-  const token = authHeader.split(" ")[1]
-  if(!token){
-    return res.status(401).send({msg: 'Unauthorized'})
-  }
-  const JWKS = createRemoteJWKSet(new URL('http://localhost:3000/api/auth/jwks'))
- 
-  try{
-    const {payload} = await jwtVerify(token, JWKS)
-    next()
+/* -------------------- Authentication Middleware -------------------- */
 
-  }catch{
-    return res.status(500).send({msg: 'server error!'})
+const JWKS = createRemoteJWKSet(new URL("http://localhost:3000/api/auth/jwks"));
+
+const verifyToken = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({
+      success: false,
+      message: "Unauthorized: Token missing",
+    });
   }
 
-}
+  const token = authHeader.split(" ")[1];
+
+  try {
+    const { payload } = await jwtVerify(token, JWKS);
+
+    req.user = payload;
+    next();
+  } catch (error) {
+    console.error("Token verification failed:", error);
+
+    return res.status(401).json({
+      success: false,
+      message: "Invalid or expired token",
+    });
+  }
+};
+
+/* -------------------- MongoDB Connection -------------------- */
 
 const client = new MongoClient(process.env.MONGODB_URI);
 
-export async function connectToMongoDB() {
+await client.connect();
+
+console.log("MongoDB connected successfully!");
+
+const db = client.db("book-nook");
+const booksCollection = db.collection("books");
+
+/* -------------------- Add Book -------------------- */
+
+app.post("/add-books", verifyToken, async (req, res) => {
   try {
-    await client.connect();
-    console.log("You successfully connected to MongoDB!");
-    return client;
-  } catch (err) {
-    console.dir(err);
-  }
-}
-
-const MongodbClient = await connectToMongoDB();
-
-const db = MongodbClient.db('book-nook');
-const booksCollection = db.collection('books');
-
-app.post('/add-books', async(req, res) => {
     const data = req.body;
+
     const result = await booksCollection.insertOne(data);
-    console.log(result);
-    res.send(result)
-})
 
-app.get("/books", async(req, res) => {
-    const result = await booksCollection.find().toArray();
-    res.send(result)
-})
+    res.status(201).json({
+      success: true,
+      message: "Book added successfully",
+      insertedId: result.insertedId,
+    });
+  } catch (error) {
+    console.error("Add book error:", error);
 
-app.get('/books/:id', verifyToken,  async(req, res) => {
-  
-  const {id} = req.params;
-  const result = await booksCollection.findOne({_id: new ObjectId(id)})
-
-  res.send(result);
-})
-
-app.get("/", (req, res) => {
-  res.send("hello world");
+    res.status(500).json({
+      success: false,
+      message: "Failed to add book",
+    });
+  }
 });
 
+/* -------------------- Get All Books -------------------- */
+
+app.get("/books", async (req, res) => {
+  try {
+    const result = await booksCollection.find().toArray();
+
+    res.status(200).json(result);
+  } catch (error) {
+    console.error("Get books error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch books",
+    });
+  }
+});
+
+/* -------------------- Get Single Book -------------------- */
+
+app.get("/books/:id", verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid book ID",
+      });
+    }
+
+    const book = await booksCollection.findOne({
+      _id: new ObjectId(id),
+    });
+
+    if (!book) {
+      return res.status(404).json({
+        success: false,
+        message: "Book not found",
+      });
+    }
+
+    res.status(200).json(book);
+  } catch (error) {
+    console.error("Get single book error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch book",
+    });
+  }
+});
+
+/* -------------------- UPDATE BOOK (EDIT) -------------------- */
+
+app.patch("/books/:id", verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid book ID",
+      });
+    }
+
+    const { title, author, category, totalCopies, image, description } =
+      req.body;
+
+    // Validate required fields
+    if (!title?.trim() || !author?.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Title and author are required",
+      });
+    }
+
+    if (!Number.isInteger(totalCopies) || totalCopies < 1) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid total copies",
+      });
+    }
+
+    // Only update allowed fields
+    const updateData = {
+      title: title.trim(),
+      author: author.trim(),
+      category,
+      totalCopies,
+      image: image || "",
+      description: description || "",
+      updatedAt: new Date(),
+    };
+
+    const userEmail = req.user.email;
+
+    if (!userEmail) {
+      return res.status(403).json({
+        success: false,
+        message: "User email not found in token",
+      });
+    }
+
+    const result = await booksCollection.updateOne(
+      {
+        _id: new ObjectId(id),
+        userEmail: userEmail,
+      },
+      {
+        $set: updateData,
+      },
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Book not found",
+      });
+    }
+
+    // Get updated book from MongoDB
+    const updatedBook = await booksCollection.findOne({
+      _id: new ObjectId(id),
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Book updated successfully",
+      book: updatedBook,
+    });
+  } catch (error) {
+    console.error("Update book error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to update book",
+    });
+  }
+});
+
+/* -------------------- DELETE BOOK -------------------- */
+
+app.delete("/books/:id", verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid book ID",
+      });
+    }
+
+    const result = await booksCollection.deleteOne({
+      _id: new ObjectId(id),
+    });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Book not found",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Book deleted successfully",
+    });
+  } catch (error) {
+    console.error("Delete book error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to delete book",
+    });
+  }
+});
+
+/* -------------------- Home Route -------------------- */
+
+app.get("/", (req, res) => {
+  res.send("BookNook API is running!");
+});
+
+/* -------------------- Server -------------------- */
 
 app.listen(PORT, () => {
-  console.log(`example app listing on port ${PORT}`);
+  console.log(`Server running on http://localhost:${PORT}`);
 });
